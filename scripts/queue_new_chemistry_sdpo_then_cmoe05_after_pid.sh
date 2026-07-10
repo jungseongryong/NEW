@@ -127,5 +127,19 @@ run_sdpo_variant() {
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_student_weight=0.0 \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_mode=poe
 
+    run_sdpo_variant \
+        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-imoe05 \
+        actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_student_weight=0.0 \
+        actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_mode=moe \
+        actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_student_weight=0.5 \
+        actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_mode=moe
+
+    run_sdpo_variant \
+        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-ipoe05 \
+        actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_student_weight=0.0 \
+        actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_mode=poe \
+        actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_student_weight=0.5 \
+        actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_mode=poe
+
     log "All NEW repo SDPO runs finished."
 } >> "$QUEUE_LOG" 2>&1
