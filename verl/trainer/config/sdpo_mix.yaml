@@ -1,0 +1,9 @@
+defaults:
+  - sdpo
+  - _self_
+
+actor_rollout_ref:
+  actor:
+    self_distillation:
+      sdpo_teacher_mix_student_weight: 0.5
+      sdpo_teacher_mix_mode: moe

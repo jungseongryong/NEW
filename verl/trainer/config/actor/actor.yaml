@@ -57,7 +57,7 @@ policy_loss:
   # # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
   _target_: verl.workers.config.PolicyLossConfig
 
-  # Loss function mode: vanilla / clip-cov / kl-cov / gpg / sdpo
+  # Loss function mode: vanilla / clip-cov / kl-cov / gpg / sdpo / srpo / rlsd / rlrt
   loss_mode: "vanilla"
 
   # Ratio of tokens to be clipped for clip-cov loss
@@ -81,7 +81,7 @@ self_distillation:
   # Required when using verl.utils.omega_conf_to_dataclass to instantiate dataclass configs
   _target_: verl.workers.config.SelfDistillationConfig
 
-  # Distillation is enabled when policy_loss.loss_mode == "sdpo"
+  # Distillation context is enabled by sdpo / srpo / rlsd / rlrt loss modes
 
   # Whether to use full-logit KL distillation
   full_logit_distillation: True
@@ -94,6 +94,25 @@ self_distillation:
 
   # KL interpolation coefficient: 0.0=forward KL, 1.0=reverse KL, in-between=JSD
   alpha: 0.5 
+
+  # Student weight for replacing the SDPO teacher target with a detached student/teacher mixture.
+  # 0.0 disables target mixing. sdpo_teacher_mix_mode can be "moe" or "poe".
+  sdpo_teacher_mix_student_weight: 0.0
+
+  # SDPO teacher target mixing mode: moe / poe
+  sdpo_teacher_mix_mode: moe
+
+  # Optional correct-trajectory override for SDPO teacher target student weight
+  sdpo_correct_teacher_mix_student_weight: null
+
+  # Optional incorrect-trajectory override for SDPO teacher target student weight
+  sdpo_incorrect_teacher_mix_student_weight: null
+
+  # Optional correct-trajectory override for SDPO teacher target mixing mode
+  sdpo_correct_teacher_mix_mode: null
+
+  # Optional incorrect-trajectory override for SDPO teacher target mixing mode
+  sdpo_incorrect_teacher_mix_mode: null
 
   # Minimum sequence reward to be considered successful
   success_reward_threshold: 0.5
@@ -126,6 +145,21 @@ self_distillation:
 
   # IS clip for loss; null disables IS weighting
   is_clip: 2
+
+  # Initial mixing coefficient for RLSD/RLRT token reweighting
+  token_reweight_lambda: 0.5
+
+  # Symmetric clipping epsilon for RLSD/RLRT token weights
+  token_reweight_eps_w: 0.2
+
+  # Number of steps to linearly decay token_reweight_lambda to zero; null disables decay
+  token_reweight_decay_steps: null
+
+  # Whether to apply teacher-entropy dynamic weighting to SRPO/SDPO tokens
+  srpo_dynamic_weighting: False
+
+  # Softmax temperature for SRPO entropy-based dynamic token weights
+  srpo_dynamic_weighting_temperature: 1.0
 
   # Reprompting template - available variables: prompt, successful_previous_attempt, feedback
   reprompt_template: |-

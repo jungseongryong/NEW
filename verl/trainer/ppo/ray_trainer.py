@@ -677,7 +677,7 @@ class RayPPOTrainer:
     ) -> Optional[tuple[DataProto, dict[str, float]]]:
         self_distillation_cfg = self.config.actor_rollout_ref.actor.get("self_distillation", None)
         loss_mode = self.config.actor_rollout_ref.actor.policy_loss.get("loss_mode", "vanilla")
-        if self_distillation_cfg is None or loss_mode != "sdpo":
+        if self_distillation_cfg is None or not core_algos.is_self_distillation_loss_mode(loss_mode):
             return None
 
         device = batch.batch["input_ids"].device
@@ -776,6 +776,10 @@ class RayPPOTrainer:
             dtype=torch.float32,
             device=device
         )
+        sequence_scores = reward_tensor.sum(dim=-1)
+        self_distillation_correct_mask = (
+            sequence_scores >= self_distillation_cfg.success_reward_threshold
+        ).to(dtype=torch.float32, device=device)
 
         uids = set(batch.non_tensor_batch["uid"])
         num_with_feedback_available = sum(1 for f in feedback_list if f is not None)
@@ -784,6 +788,7 @@ class RayPPOTrainer:
         metrics = {
             "self_distillation/success_group_fraction": len([uid for uid in uids if len(success_by_uid[uid]) > 0]) / len(uids),
             "self_distillation/success_sample_fraction": num_with_solution / batch_size,
+            "self_distillation/correct_sample_fraction": self_distillation_correct_mask.float().mean().item(),
             "self_distillation/feedback_available_fraction": num_with_feedback_available / batch_size,
             "self_distillation/feedback_used_fraction": num_with_feedback_used / batch_size,
             "self_distillation/reprompt_sample_fraction": self_distillation_mask.float().mean().item(),
@@ -793,6 +798,7 @@ class RayPPOTrainer:
             "teacher_attention_mask": teacher_attention_mask,
             "teacher_position_ids": teacher_position_ids,
             "self_distillation_mask": self_distillation_mask,
+            "self_distillation_correct_mask": self_distillation_correct_mask,
         }), metrics
 
     def _get_gen_batch(self, batch: DataProto) -> DataProto:

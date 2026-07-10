@@ -893,7 +893,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             if self._is_actor:
                 self_distillation_cfg = self.config.actor.get("self_distillation", None)
                 loss_mode = self.config.actor.policy_loss.get("loss_mode", "vanilla")
-                if self_distillation_cfg is not None and loss_mode == "sdpo":
+                from verl.trainer.ppo.core_algos import is_self_distillation_loss_mode
+
+                if self_distillation_cfg is not None and is_self_distillation_loss_mode(loss_mode):
                     teacher_regularization = self_distillation_cfg.get("teacher_regularization", "ema")
                     if teacher_regularization == "trust-region":
                         self.actor.teacher_module = TrustRegionTeacher(

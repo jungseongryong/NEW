@@ -18,7 +18,13 @@ The function implemented in this file should be used by trainer with different d
 implement PPO-like algorithms.
 """
 
-__all__ = ["register_adv_est", "get_adv_estimator_fn", "AdvantageEstimator"]
+__all__ = [
+    "register_adv_est",
+    "get_adv_estimator_fn",
+    "AdvantageEstimator",
+    "is_self_distillation_loss_mode",
+    "is_self_distillation_reweight_loss_mode",
+]
 
 from collections import defaultdict
 from enum import Enum
@@ -48,6 +54,25 @@ PolicyLossFn = Callable[
 ]
 
 POLICY_LOSS_REGISTRY: dict[str, PolicyLossFn] = {}
+
+SDPO_LOSS_MODE = "sdpo"
+SRPO_LOSS_MODE = "srpo"
+RLSD_LOSS_MODE = "rlsd"
+RLRT_LOSS_MODE = "rlrt"
+SELF_DISTILLATION_REWEIGHT_LOSS_MODES = {RLSD_LOSS_MODE, RLRT_LOSS_MODE}
+SELF_DISTILLATION_LOSS_MODES = {SDPO_LOSS_MODE, SRPO_LOSS_MODE, *SELF_DISTILLATION_REWEIGHT_LOSS_MODES}
+
+
+def normalize_self_distillation_loss_mode(loss_mode: str) -> str:
+    return loss_mode.replace("-", "_")
+
+
+def is_self_distillation_reweight_loss_mode(loss_mode: str) -> bool:
+    return loss_mode in SELF_DISTILLATION_REWEIGHT_LOSS_MODES
+
+
+def is_self_distillation_loss_mode(loss_mode: str) -> bool:
+    return loss_mode in SELF_DISTILLATION_LOSS_MODES
 
 
 def register_policy_loss(name: str) -> Callable[[PolicyLossFn], PolicyLossFn]:
@@ -1082,7 +1107,292 @@ def agg_loss(
     return loss
 
 
-def compute_self_distillation_loss(
+def _config_get(config: Any, key: str, default: Any = None) -> Any:
+    if config is None:
+        return default
+    if hasattr(config, "get"):
+        return config.get(key, default)
+    return getattr(config, key, default)
+
+
+def _maybe_mix_sdpo_teacher_target(
+    student_log_probs: torch.Tensor,
+    teacher_log_probs: torch.Tensor,
+    self_distillation_config: Any,
+    self_distillation_correct_mask: Optional[torch.Tensor] = None,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    detached_student_log_probs = student_log_probs.detach()
+    detached_teacher_log_probs = teacher_log_probs.detach()
+
+    def validate_weight(name: str, value: float) -> float:
+        value = float(value)
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"self_distillation.{name} must be in [0,1], got {value}")
+        return value
+
+    def validate_mode(name: str, value: str) -> str:
+        value = str(value)
+        if value not in {"moe", "poe"}:
+            raise ValueError(f"self_distillation.{name} must be one of ['moe', 'poe'], got {value}")
+        return value
+
+    def mix_target(student_weight: float, mix_mode: str) -> torch.Tensor:
+        if student_weight <= 0.0:
+            return detached_teacher_log_probs
+
+        weight = torch.tensor(student_weight, dtype=student_log_probs.dtype, device=student_log_probs.device)
+        if mix_mode == "moe":
+            return torch.logsumexp(
+                torch.stack(
+                    [
+                        detached_student_log_probs + torch.log(weight),
+                        detached_teacher_log_probs + torch.log1p(-weight),
+                    ]
+                ),
+                dim=0,
+            )
+
+        mixed_teacher_log_probs = weight * detached_student_log_probs + (1.0 - weight) * detached_teacher_log_probs
+        return mixed_teacher_log_probs - torch.logsumexp(mixed_teacher_log_probs, dim=-1, keepdim=True)
+
+    base_weight = validate_weight(
+        "sdpo_teacher_mix_student_weight",
+        _config_get(self_distillation_config, "sdpo_teacher_mix_student_weight", 0.0),
+    )
+    base_mode = validate_mode(
+        "sdpo_teacher_mix_mode",
+        _config_get(self_distillation_config, "sdpo_teacher_mix_mode", "moe"),
+    )
+    correct_weight_override = _config_get(
+        self_distillation_config,
+        "sdpo_correct_teacher_mix_student_weight",
+        None,
+    )
+    incorrect_weight_override = _config_get(
+        self_distillation_config,
+        "sdpo_incorrect_teacher_mix_student_weight",
+        None,
+    )
+    correct_mode_override = _config_get(self_distillation_config, "sdpo_correct_teacher_mix_mode", None)
+    incorrect_mode_override = _config_get(self_distillation_config, "sdpo_incorrect_teacher_mix_mode", None)
+    outcome_mix_enabled = (
+        correct_weight_override is not None
+        or incorrect_weight_override is not None
+        or correct_mode_override is not None
+        or incorrect_mode_override is not None
+    )
+
+    metrics = {
+        "self_distillation/sdpo_teacher_mix_student_weight": base_weight,
+        "self_distillation/sdpo_teacher_mix_mode_moe": float(base_mode == "moe"),
+        "self_distillation/sdpo_teacher_mix_mode_poe": float(base_mode == "poe"),
+        "self_distillation/sdpo_teacher_mix_outcome_enabled": float(outcome_mix_enabled),
+    }
+
+    if not outcome_mix_enabled:
+        if base_weight <= 0.0:
+            return teacher_log_probs, metrics
+        return mix_target(base_weight, base_mode), metrics
+
+    if self_distillation_correct_mask is None:
+        raise ValueError("SDPO per-outcome teacher target mixing requires self_distillation_correct_mask.")
+
+    correct_weight = validate_weight(
+        "sdpo_correct_teacher_mix_student_weight",
+        base_weight if correct_weight_override is None else correct_weight_override,
+    )
+    incorrect_weight = validate_weight(
+        "sdpo_incorrect_teacher_mix_student_weight",
+        base_weight if incorrect_weight_override is None else incorrect_weight_override,
+    )
+    correct_mode = validate_mode(
+        "sdpo_correct_teacher_mix_mode",
+        base_mode if correct_mode_override is None else correct_mode_override,
+    )
+    incorrect_mode = validate_mode(
+        "sdpo_incorrect_teacher_mix_mode",
+        base_mode if incorrect_mode_override is None else incorrect_mode_override,
+    )
+
+    correct_target = mix_target(correct_weight, correct_mode)
+    incorrect_target = mix_target(incorrect_weight, incorrect_mode)
+    correct_mask = self_distillation_correct_mask.to(dtype=torch.bool, device=student_log_probs.device).view(-1, 1, 1)
+    mixed_teacher_log_probs = torch.where(correct_mask, correct_target, incorrect_target)
+    metrics.update(
+        {
+            "self_distillation/sdpo_correct_teacher_mix_student_weight": correct_weight,
+            "self_distillation/sdpo_incorrect_teacher_mix_student_weight": incorrect_weight,
+            "self_distillation/sdpo_correct_teacher_mix_mode_moe": float(correct_mode == "moe"),
+            "self_distillation/sdpo_correct_teacher_mix_mode_poe": float(correct_mode == "poe"),
+            "self_distillation/sdpo_incorrect_teacher_mix_mode_moe": float(incorrect_mode == "moe"),
+            "self_distillation/sdpo_incorrect_teacher_mix_mode_poe": float(incorrect_mode == "poe"),
+        }
+    )
+    return mixed_teacher_log_probs, metrics
+
+
+def _get_token_reweight_lambda(self_distillation_config: Any, global_step: Optional[int] = None) -> float:
+    init_lambda = float(
+        _config_get(
+            self_distillation_config,
+            "token_reweight_lambda",
+            _config_get(self_distillation_config, "rlsd_lambda", 0.5),
+        )
+    )
+    decay_steps = _config_get(self_distillation_config, "token_reweight_decay_steps", None)
+    if decay_steps is None or decay_steps <= 0 or global_step is None:
+        return init_lambda
+
+    completed_steps = max(float(global_step) - 1.0, 0.0)
+    decay = max(0.0, 1.0 - completed_steps / float(decay_steps))
+    return init_lambda * decay
+
+
+def compute_self_distillation_reweighted_advantages(
+    loss_mode: str,
+    student_log_probs: torch.Tensor,
+    teacher_log_probs: torch.Tensor,
+    advantages: torch.Tensor,
+    response_mask: torch.Tensor,
+    self_distillation_config: Any,
+    self_distillation_mask: Optional[torch.Tensor] = None,
+    self_distillation_correct_mask: Optional[torch.Tensor] = None,
+    global_step: Optional[int] = None,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    """Apply self-distillation token reweighting to GRPO advantages.
+
+    RLSD uses the teacher-over-student ratio as a correction signal. RLRT uses
+    the reversed student-over-teacher ratio and gates the update to correct
+    rollouts only. Tokens outside the active context keep their original GRPO
+    advantage.
+    """
+    normalized_mode = normalize_self_distillation_loss_mode(loss_mode)
+    if normalized_mode not in SELF_DISTILLATION_REWEIGHT_LOSS_MODES:
+        raise ValueError(f"Unsupported self-distillation token reweight mode: {loss_mode}")
+
+    if normalized_mode == RLRT_LOSS_MODE and self_distillation_correct_mask is None:
+        raise ValueError("RLRT requires self_distillation_correct_mask for reward-gated reweighting.")
+
+    log_ratio = teacher_log_probs - student_log_probs
+    if normalized_mode == RLRT_LOSS_MODE:
+        log_ratio = -log_ratio
+    sign_advantage = torch.sign(advantages).detach()
+    log_weight = torch.clamp(sign_advantage * log_ratio.detach(), min=-20.0, max=20.0)
+    raw_weight = torch.exp(log_weight)
+
+    eps_w = float(
+        _config_get(
+            self_distillation_config,
+            "token_reweight_eps_w",
+            _config_get(self_distillation_config, "rlsd_eps_w", 0.2),
+        )
+    )
+    weight_lower = max(0.0, 1.0 - eps_w)
+    weight_upper = 1.0 + eps_w
+    clipped_weight = torch.clamp(raw_weight, min=weight_lower, max=weight_upper)
+
+    lambda_t = _get_token_reweight_lambda(self_distillation_config, global_step=global_step)
+    modulator = (1.0 - lambda_t) + lambda_t * clipped_weight
+
+    active_mask = response_mask.to(dtype=modulator.dtype)
+    if self_distillation_mask is not None:
+        active_mask = active_mask * self_distillation_mask.to(dtype=modulator.dtype).unsqueeze(-1)
+    if normalized_mode == RLRT_LOSS_MODE:
+        active_mask = active_mask * self_distillation_correct_mask.to(dtype=modulator.dtype).unsqueeze(-1)
+
+    modulator = active_mask * modulator + (1.0 - active_mask)
+    refined_advantages = advantages * modulator
+
+    valid = response_mask.bool()
+    active = active_mask.bool() & valid
+    metrics: dict[str, Any] = {
+        "self_distillation/token_reweight_is_rlrt": float(normalized_mode == RLRT_LOSS_MODE),
+        "self_distillation/token_reweight_lambda": lambda_t,
+        "self_distillation/token_reweight_eps_w": eps_w,
+        "self_distillation/token_reweight_active_token_fraction": (
+            active.float().sum() / valid.float().sum().clamp(min=1.0)
+        )
+        .detach()
+        .item(),
+    }
+    if self_distillation_mask is not None:
+        metrics["self_distillation/token_reweight_context_sample_fraction"] = (
+            self_distillation_mask.float().mean().detach().item()
+        )
+    if self_distillation_correct_mask is not None:
+        metrics["self_distillation/token_reweight_correct_sample_fraction"] = (
+            self_distillation_correct_mask.float().mean().detach().item()
+        )
+        if normalized_mode == RLRT_LOSS_MODE:
+            metrics["self_distillation/token_reweight_reward_gate_fraction"] = (
+                self_distillation_correct_mask.float().mean().detach().item()
+            )
+    if active.any():
+        active_weight = raw_weight[active]
+        active_clipped_weight = clipped_weight[active]
+        metrics.update(
+            {
+                "self_distillation/token_reweight_w_mean": active_weight.mean().detach().item(),
+                "self_distillation/token_reweight_w_std": active_weight.std(unbiased=False).detach().item(),
+                "self_distillation/token_reweight_w_clipped_mean": active_clipped_weight.mean().detach().item(),
+                "self_distillation/token_reweight_w_clip_frac": (
+                    ((active_weight < weight_lower) | (active_weight > weight_upper)).float().mean().detach().item()
+                ),
+            }
+        )
+    else:
+        metrics.update(
+            {
+                "self_distillation/token_reweight_w_mean": 1.0,
+                "self_distillation/token_reweight_w_std": 0.0,
+                "self_distillation/token_reweight_w_clipped_mean": 1.0,
+                "self_distillation/token_reweight_w_clip_frac": 0.0,
+            }
+        )
+
+    return refined_advantages, metrics
+
+
+def compute_self_distillation_reweighted_policy_loss(
+    loss_mode: str,
+    old_log_prob: torch.Tensor,
+    log_prob: torch.Tensor,
+    teacher_log_probs: torch.Tensor,
+    advantages: torch.Tensor,
+    response_mask: torch.Tensor,
+    self_distillation_config: Any,
+    self_distillation_mask: Optional[torch.Tensor] = None,
+    self_distillation_correct_mask: Optional[torch.Tensor] = None,
+    loss_agg_mode: str = "token-mean",
+    config: Optional[ActorConfig] = None,
+    rollout_is_weights: Optional[torch.Tensor] = None,
+    global_step: Optional[int] = None,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    refined_advantages, reweight_metrics = compute_self_distillation_reweighted_advantages(
+        loss_mode=loss_mode,
+        student_log_probs=log_prob,
+        teacher_log_probs=teacher_log_probs,
+        advantages=advantages,
+        response_mask=response_mask,
+        self_distillation_config=self_distillation_config,
+        self_distillation_mask=self_distillation_mask,
+        self_distillation_correct_mask=self_distillation_correct_mask,
+        global_step=global_step,
+    )
+    pg_loss, pg_metrics = compute_policy_loss_vanilla(
+        old_log_prob=old_log_prob,
+        log_prob=log_prob,
+        advantages=refined_advantages,
+        response_mask=response_mask,
+        loss_agg_mode=loss_agg_mode,
+        config=config,
+        rollout_is_weights=rollout_is_weights,
+    )
+    pg_metrics.update(reweight_metrics)
+    return pg_loss, pg_metrics
+
+
+def _compute_self_distillation_loss_mat(
     student_log_probs: torch.Tensor,
     teacher_log_probs: torch.Tensor,
     response_mask: torch.Tensor,
@@ -1093,9 +1403,9 @@ def compute_self_distillation_loss(
     student_topk_log_probs: Optional[torch.Tensor] = None,
     teacher_topk_log_probs: Optional[torch.Tensor] = None,
     self_distillation_mask: Optional[torch.Tensor] = None,
-    loss_agg_mode: str = "token-mean",
+    self_distillation_correct_mask: Optional[torch.Tensor] = None,
     rollout_is_weights: Optional[torch.Tensor] = None,
-) -> tuple[torch.Tensor, dict[str, Any]]:
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
 
     metrics = {}
 
@@ -1126,7 +1436,19 @@ def compute_self_distillation_loss(
             if self_distillation_config.distillation_add_tail:
                 student_distill_log_probs = add_tail(student_distill_log_probs)
                 teacher_distill_log_probs = add_tail(teacher_distill_log_probs)
+                teacher_distill_log_probs, target_mix_metrics = _maybe_mix_sdpo_teacher_target(
+                    student_distill_log_probs,
+                    teacher_distill_log_probs,
+                    self_distillation_config,
+                    self_distillation_correct_mask,
+                )
             else:
+                teacher_distill_log_probs, target_mix_metrics = _maybe_mix_sdpo_teacher_target(
+                    student_distill_log_probs,
+                    teacher_distill_log_probs,
+                    self_distillation_config,
+                    self_distillation_correct_mask,
+                )
                 student_distill_log_probs = renorm_topk_log_probs(student_distill_log_probs)
                 teacher_distill_log_probs = renorm_topk_log_probs(teacher_distill_log_probs)
         else:
@@ -1134,6 +1456,13 @@ def compute_self_distillation_loss(
                 raise ValueError("full_logit_distillation requires student_all_log_probs and teacher_all_log_probs.")
             student_distill_log_probs = student_all_log_probs
             teacher_distill_log_probs = teacher_all_log_probs
+            teacher_distill_log_probs, target_mix_metrics = _maybe_mix_sdpo_teacher_target(
+                student_distill_log_probs,
+                teacher_distill_log_probs,
+                self_distillation_config,
+                self_distillation_correct_mask,
+            )
+        metrics.update(target_mix_metrics)
 
         if self_distillation_config.alpha == 0.0:
             kl_loss = F.kl_div(
@@ -1179,6 +1508,71 @@ def compute_self_distillation_loss(
     if rollout_is_weights is not None:
         per_token_loss = per_token_loss * rollout_is_weights
 
+    if _config_get(self_distillation_config, "srpo_dynamic_weighting", False):
+        if not self_distillation_config.full_logit_distillation:
+            raise ValueError("SRPO dynamic weighting requires full_logit_distillation=True.")
+        teacher_probs = teacher_distill_log_probs.exp()
+        teacher_entropy = -(teacher_probs * teacher_distill_log_probs).sum(dim=-1)
+        temperature = float(_config_get(self_distillation_config, "srpo_dynamic_weighting_temperature", 1.0))
+        token_weights = torch.exp((-teacher_entropy / temperature).clamp(min=-20.0, max=20.0))
+        active_mask = loss_mask.to(dtype=token_weights.dtype)
+        normalizer = (token_weights * active_mask).sum().clamp(min=1e-6) / active_mask.sum().clamp(min=1.0)
+        token_weights = token_weights / normalizer.detach()
+        per_token_loss = per_token_loss * token_weights
+        metrics.update(
+            {
+                "self_distillation/dynamic_weighting_enabled": 1.0,
+                "self_distillation/dynamic_weight_entropy_mean": (
+                    (teacher_entropy * active_mask).sum() / active_mask.sum().clamp(min=1.0)
+                )
+                .detach()
+                .item(),
+                "self_distillation/dynamic_weight_mean": (
+                    (token_weights * active_mask).sum() / active_mask.sum().clamp(min=1.0)
+                )
+                .detach()
+                .item(),
+                "self_distillation/dynamic_weight_max": token_weights[active_mask.bool()].max().detach().item()
+                if active_mask.bool().any().item()
+                else 0.0,
+            }
+        )
+    else:
+        metrics["self_distillation/dynamic_weighting_enabled"] = 0.0
+
+    return per_token_loss, loss_mask, metrics
+
+
+def compute_self_distillation_loss(
+    student_log_probs: torch.Tensor,
+    teacher_log_probs: torch.Tensor,
+    response_mask: torch.Tensor,
+    self_distillation_config: Any,
+    old_log_probs: Optional[torch.Tensor] = None,
+    student_all_log_probs: Optional[torch.Tensor] = None,
+    teacher_all_log_probs: Optional[torch.Tensor] = None,
+    student_topk_log_probs: Optional[torch.Tensor] = None,
+    teacher_topk_log_probs: Optional[torch.Tensor] = None,
+    self_distillation_mask: Optional[torch.Tensor] = None,
+    self_distillation_correct_mask: Optional[torch.Tensor] = None,
+    loss_agg_mode: str = "token-mean",
+    rollout_is_weights: Optional[torch.Tensor] = None,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    per_token_loss, loss_mask, metrics = _compute_self_distillation_loss_mat(
+        student_log_probs=student_log_probs,
+        teacher_log_probs=teacher_log_probs,
+        response_mask=response_mask,
+        self_distillation_config=self_distillation_config,
+        old_log_probs=old_log_probs,
+        student_all_log_probs=student_all_log_probs,
+        teacher_all_log_probs=teacher_all_log_probs,
+        student_topk_log_probs=student_topk_log_probs,
+        teacher_topk_log_probs=teacher_topk_log_probs,
+        self_distillation_mask=self_distillation_mask,
+        self_distillation_correct_mask=self_distillation_correct_mask,
+        rollout_is_weights=rollout_is_weights,
+    )
+
     loss = agg_loss(
         loss_mat=per_token_loss,
         loss_mask=loss_mask,
@@ -1186,6 +1580,127 @@ def compute_self_distillation_loss(
         batch_num_tokens=loss_mask.sum().clamp(min=1.0),
     )
     return loss, metrics
+
+
+def _compute_vanilla_policy_loss_mat(
+    old_log_prob: torch.Tensor,
+    log_prob: torch.Tensor,
+    advantages: torch.Tensor,
+    response_mask: torch.Tensor,
+    config: ActorConfig,
+    rollout_is_weights: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    clip_ratio = config.clip_ratio
+    clip_ratio_low = config.clip_ratio_low if config.clip_ratio_low is not None else clip_ratio
+    clip_ratio_high = config.clip_ratio_high if config.clip_ratio_high is not None else clip_ratio
+    clip_ratio_c = config.get("clip_ratio_c", 3.0)
+
+    assert clip_ratio_c > 1.0, (
+        "The lower bound of the clip_ratio_c for dual-clip PPO should be greater than 1.0,"
+        + f" but get the value: {clip_ratio_c}."
+    )
+
+    negative_approx_kl = log_prob - old_log_prob
+    negative_approx_kl = torch.clamp(negative_approx_kl, min=-20.0, max=20.0)
+    ratio = torch.exp(negative_approx_kl)
+    ppo_kl = verl_F.masked_mean(-negative_approx_kl, response_mask)
+
+    pg_losses1 = -advantages * ratio
+    pg_losses2 = -advantages * torch.clamp(ratio, 1 - clip_ratio_low, 1 + clip_ratio_high)
+    clip_pg_losses1 = torch.maximum(pg_losses1, pg_losses2)
+    pg_clipfrac = verl_F.masked_mean(torch.gt(pg_losses2, pg_losses1).float(), response_mask)
+
+    pg_losses3 = -advantages * clip_ratio_c
+    clip_pg_losses2 = torch.min(pg_losses3, clip_pg_losses1)
+    pg_clipfrac_lower = verl_F.masked_mean(
+        torch.gt(clip_pg_losses1, pg_losses3) * (advantages < 0).float(), response_mask
+    )
+
+    pg_losses = torch.where(advantages < 0, clip_pg_losses2, clip_pg_losses1)
+    if rollout_is_weights is not None:
+        pg_losses = pg_losses * rollout_is_weights
+
+    metrics = {
+        "actor/pg_clipfrac": pg_clipfrac.detach().item(),
+        "actor/ppo_kl": ppo_kl.detach().item(),
+        "actor/pg_clipfrac_lower": pg_clipfrac_lower.detach().item(),
+    }
+    return pg_losses, metrics
+
+
+def compute_srpo_policy_loss(
+    old_log_prob: torch.Tensor,
+    log_prob: torch.Tensor,
+    advantages: torch.Tensor,
+    response_mask: torch.Tensor,
+    teacher_log_probs: torch.Tensor,
+    self_distillation_config: Any,
+    self_distillation_mask: torch.Tensor,
+    self_distillation_correct_mask: torch.Tensor,
+    loss_agg_mode: str = "token-mean",
+    config: Optional[ActorConfig] = None,
+    rollout_is_weights: Optional[torch.Tensor] = None,
+    old_log_probs: Optional[torch.Tensor] = None,
+    student_all_log_probs: Optional[torch.Tensor] = None,
+    teacher_all_log_probs: Optional[torch.Tensor] = None,
+    student_topk_log_probs: Optional[torch.Tensor] = None,
+    teacher_topk_log_probs: Optional[torch.Tensor] = None,
+) -> tuple[torch.Tensor, dict[str, Any]]:
+    """Sample-Routed Policy Optimization.
+
+    Correct samples use the GRPO/PPO branch. Incorrect samples with teacher context use
+    the SDPO branch, optionally with entropy-aware dynamic token weighting.
+    """
+    if config is None:
+        raise ValueError("SRPO requires actor config for the GRPO branch.")
+
+    correct_sample_mask = self_distillation_correct_mask.to(dtype=response_mask.dtype)
+    distill_sample_mask = self_distillation_mask.to(dtype=response_mask.dtype) * (1.0 - correct_sample_mask)
+    grpo_token_mask = response_mask * (1.0 - distill_sample_mask.unsqueeze(1))
+
+    grpo_loss_mat, grpo_metrics = _compute_vanilla_policy_loss_mat(
+        old_log_prob=old_log_prob,
+        log_prob=log_prob,
+        advantages=advantages,
+        response_mask=grpo_token_mask,
+        config=config,
+        rollout_is_weights=rollout_is_weights,
+    )
+    sdpo_loss_mat, sdpo_token_mask, sdpo_metrics = _compute_self_distillation_loss_mat(
+        student_log_probs=log_prob,
+        teacher_log_probs=teacher_log_probs,
+        response_mask=response_mask,
+        self_distillation_config=self_distillation_config,
+        old_log_probs=old_log_probs if old_log_probs is not None else old_log_prob,
+        student_all_log_probs=student_all_log_probs,
+        teacher_all_log_probs=teacher_all_log_probs,
+        student_topk_log_probs=student_topk_log_probs,
+        teacher_topk_log_probs=teacher_topk_log_probs,
+        self_distillation_mask=distill_sample_mask,
+        rollout_is_weights=rollout_is_weights,
+    )
+
+    routed_loss_mat = grpo_loss_mat * grpo_token_mask + sdpo_loss_mat * sdpo_token_mask
+    routed_token_mask = grpo_token_mask + sdpo_token_mask
+    total_routed_tokens = routed_token_mask.sum().clamp(min=1.0)
+    total_loss = routed_loss_mat.sum() / total_routed_tokens
+
+    grpo_tokens = grpo_token_mask.sum().clamp(min=1.0)
+    sdpo_tokens = sdpo_token_mask.sum().clamp(min=1.0)
+    grpo_loss = (grpo_loss_mat * grpo_token_mask).sum() / grpo_tokens
+    sdpo_loss = (sdpo_loss_mat * sdpo_token_mask).sum() / sdpo_tokens
+    metrics = {
+        "srpo/grpo_loss": grpo_loss.detach().item(),
+        "srpo/sdpo_loss": sdpo_loss.detach().item(),
+        "srpo/routed_loss": total_loss.detach().item(),
+        "srpo/routed_token_count": routed_token_mask.sum().detach().item(),
+        "srpo/correct_sample_fraction": correct_sample_mask.float().mean().detach().item(),
+        "srpo/sdpo_sample_fraction": distill_sample_mask.float().mean().detach().item(),
+        "srpo/grpo_sample_fraction": (1.0 - distill_sample_mask).float().mean().detach().item(),
+    }
+    metrics.update({f"srpo/grpo_{key}": value for key, value in grpo_metrics.items()})
+    metrics.update(sdpo_metrics)
+    return total_loss, metrics
 
 
 @deprecated("verl.trainer.ppo.core_algos.compute_policy_loss_vanilla")
