@@ -100,6 +100,8 @@ class SelfDistillationConfig(BaseConfig):
     sdpo_incorrect_teacher_mix_student_weight: Optional[float] = None
     sdpo_correct_teacher_mix_mode: Optional[str] = None
     sdpo_incorrect_teacher_mix_mode: Optional[str] = None
+    jsd_histogram_log_freq: int = 0
+    jsd_histogram_max_samples: int = 4096
     reprompt_template: str = (
         "{prompt}{solution}{feedback}\n\n"
         "Correctly solve the original question.\n"
@@ -133,6 +135,14 @@ class SelfDistillationConfig(BaseConfig):
         if self.distillation_topk is not None and self.distillation_topk <= 0:
             raise ValueError(
                 f"self_distillation.distillation_topk must be a positive integer, got {self.distillation_topk}"
+            )
+        if self.jsd_histogram_log_freq < 0:
+            raise ValueError(
+                f"self_distillation.jsd_histogram_log_freq must be non-negative, got {self.jsd_histogram_log_freq}"
+            )
+        if self.jsd_histogram_max_samples <= 0:
+            raise ValueError(
+                f"self_distillation.jsd_histogram_max_samples must be positive, got {self.jsd_histogram_max_samples}"
             )
         if self.is_clip is not None and self.is_clip <= 0:
             raise ValueError(f"self_distillation.is_clip must be positive, got {self.is_clip}")

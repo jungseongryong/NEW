@@ -905,6 +905,7 @@ class DataParallelPPOActor(BasePPOActor):
                                 self_distillation_correct_mask=self_distillation_correct_mask,
                                 loss_agg_mode=loss_agg_mode,
                                 rollout_is_weights=rollout_is_weights,
+                                global_step=global_step,
                             )
                         else:
                             pg_loss, pg_metrics = compute_self_distillation_reweighted_policy_loss(

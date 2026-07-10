@@ -1564,6 +1564,50 @@ class RayPPOTrainer:
             actor_output = self.actor_rollout_wg.update_actor(batch)
         return actor_output
 
+    @staticmethod
+    def _pop_wandb_histogram_values(metrics: dict[str, Any]) -> dict[str, np.ndarray]:
+        histogram_values: dict[str, np.ndarray] = {}
+        prefix = "__wandb_hist/"
+
+        def collect_arrays(value: Any, arrays: list[np.ndarray]) -> None:
+            if value is None:
+                return
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    collect_arrays(item, arrays)
+                return
+            array = np.asarray(value, dtype=np.float32).reshape(-1)
+            if array.size > 0:
+                arrays.append(array)
+
+        for key in list(metrics.keys()):
+            if not key.startswith(prefix):
+                continue
+            arrays: list[np.ndarray] = []
+            collect_arrays(metrics.pop(key), arrays)
+            if arrays:
+                histogram_values[key[len(prefix):]] = np.concatenate(arrays)
+        return histogram_values
+
+    def _log_wandb_histograms(self, logger: Any, histogram_values: dict[str, np.ndarray]) -> None:
+        if not histogram_values:
+            return
+        configured_loggers = self.config.trainer.logger
+        if isinstance(configured_loggers, str):
+            configured_loggers = [configured_loggers]
+        if "wandb" not in configured_loggers:
+            return
+
+        import wandb
+
+        histogram_metrics = {
+            key: wandb.Histogram(values)
+            for key, values in histogram_values.items()
+            if values.size > 0
+        }
+        if histogram_metrics:
+            logger.log(data=histogram_metrics, step=self.global_steps, backend=["wandb"])
+
     def _update_critic(self, batch: DataProto) -> DataProto:
         if self.use_legacy_worker_impl == "disable":
             batch_td = batch.to_tensordict()
@@ -1883,12 +1927,16 @@ class RayPPOTrainer:
                         critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
                         metrics.update(critic_output_metrics)
 
+                    wandb_histogram_values = {}
+
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
                             actor_output = self._update_actor(batch)
-                        actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
+                        actor_raw_metrics = actor_output.meta_info["metrics"]
+                        wandb_histogram_values = self._pop_wandb_histogram_values(actor_raw_metrics)
+                        actor_output_metrics = reduce_metrics(actor_raw_metrics)
                         metrics.update(actor_output_metrics)
 
                     # Log rollout generations if enabled
@@ -1969,6 +2017,7 @@ class RayPPOTrainer:
                     self.train_dataloader.sampler.update(batch=batch)
 
                 # TODO: make a canonical logger that supports various backend
+                self._log_wandb_histograms(logger, wandb_histogram_values)
                 logger.log(data=metrics, step=self.global_steps)
 
                 progress_bar.update(1)

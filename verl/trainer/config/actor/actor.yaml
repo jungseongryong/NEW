@@ -114,6 +114,13 @@ self_distillation:
   # Optional incorrect-trajectory override for SDPO teacher target mixing mode
   sdpo_incorrect_teacher_mix_mode: null
 
+  # Log W&B histograms of per-token JSD split by correct/incorrect trajectory every N steps.
+  # 0 disables histogram logging.
+  jsd_histogram_log_freq: 0
+
+  # Maximum token JSD values sampled per correct/incorrect histogram at a logging step.
+  jsd_histogram_max_samples: 4096
+
   # Minimum sequence reward to be considered successful
   success_reward_threshold: 0.5
 

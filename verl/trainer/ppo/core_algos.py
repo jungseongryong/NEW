@@ -1420,6 +1420,7 @@ def _compute_self_distillation_loss_mat(
     self_distillation_mask: Optional[torch.Tensor] = None,
     self_distillation_correct_mask: Optional[torch.Tensor] = None,
     rollout_is_weights: Optional[torch.Tensor] = None,
+    global_step: Optional[int] = None,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
 
     metrics = {}
@@ -1541,6 +1542,20 @@ def _compute_self_distillation_loss_mat(
                 seq_values = (values * token_mask).sum(dim=1) / token_mask.sum(dim=1).clamp(min=1.0)
                 return ((seq_values * sample_mask).sum() / sample_count.clamp(min=1.0)).detach().item()
 
+            def sample_histogram_values(values: torch.Tensor, mask: torch.Tensor, max_samples: int) -> np.ndarray:
+                selected = values[mask.bool()].detach().float().flatten()
+                if selected.numel() == 0:
+                    return np.asarray([], dtype=np.float32)
+                if selected.numel() > max_samples:
+                    indices = torch.linspace(
+                        0,
+                        selected.numel() - 1,
+                        steps=max_samples,
+                        device=selected.device,
+                    ).long()
+                    selected = selected.index_select(0, indices)
+                return selected.cpu().numpy().astype(np.float32, copy=False)
+
             correct_sample_mask = (
                 (self_distillation_correct_mask.to(dtype=per_token_loss.dtype, device=per_token_loss.device) > 0.5)
                 & (self_distillation_mask.to(device=per_token_loss.device).bool()
@@ -1567,6 +1582,30 @@ def _compute_self_distillation_loss_mat(
                     ),
                 }
             )
+            histogram_log_freq = int(_config_get(self_distillation_config, "jsd_histogram_log_freq", 0) or 0)
+            if (
+                metric_name == "jsd"
+                and histogram_log_freq > 0
+                and global_step is not None
+                and int(global_step) % histogram_log_freq == 0
+            ):
+                max_histogram_samples = int(
+                    _config_get(self_distillation_config, "jsd_histogram_max_samples", 4096)
+                )
+                metrics.update(
+                    {
+                        "__wandb_hist/self_distillation/jsd_hist/correct_token": sample_histogram_values(
+                            per_token_loss,
+                            correct_token_mask,
+                            max_histogram_samples,
+                        ),
+                        "__wandb_hist/self_distillation/jsd_hist/incorrect_token": sample_histogram_values(
+                            per_token_loss,
+                            incorrect_token_mask,
+                            max_histogram_samples,
+                        ),
+                    }
+                )
     else:
         assert self_distillation_config.alpha == 1.0, "Only reverse KL is supported for non-full-logit distillation"
         log_ratio = student_log_probs - teacher_log_probs
@@ -1636,6 +1675,7 @@ def compute_self_distillation_loss(
     self_distillation_correct_mask: Optional[torch.Tensor] = None,
     loss_agg_mode: str = "token-mean",
     rollout_is_weights: Optional[torch.Tensor] = None,
+    global_step: Optional[int] = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     per_token_loss, loss_mask, metrics = _compute_self_distillation_loss_mat(
         student_log_probs=student_log_probs,
@@ -1651,6 +1691,7 @@ def compute_self_distillation_loss(
         self_distillation_mask=self_distillation_mask,
         self_distillation_correct_mask=self_distillation_correct_mask,
         rollout_is_weights=rollout_is_weights,
+        global_step=global_step,
     )
 
     loss = agg_loss(

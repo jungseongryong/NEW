@@ -254,6 +254,8 @@ def test_sdpo_logs_jsd_split_by_correctness():
         sdpo_teacher_mix_mode="moe",
         is_clip=None,
         srpo_dynamic_weighting=False,
+        jsd_histogram_log_freq=5,
+        jsd_histogram_max_samples=3,
     )
 
     _, metrics = compute_self_distillation_loss(
@@ -265,6 +267,7 @@ def test_sdpo_logs_jsd_split_by_correctness():
         teacher_all_log_probs=teacher_all_log_probs,
         self_distillation_mask=torch.tensor([1.0, 1.0]),
         self_distillation_correct_mask=torch.tensor([1.0, 0.0]),
+        global_step=5,
     )
 
     mixture_log_probs = (0.5 * student_all_probs + 0.5 * teacher_all_probs).log()
@@ -285,6 +288,8 @@ def test_sdpo_logs_jsd_split_by_correctness():
     assert metrics["self_distillation/jsd/incorrect_token_mean"] == pytest.approx(jsd_tokens[1].mean().item(), abs=1e-6)
     assert metrics["self_distillation/jsd/correct_seq_mean"] == pytest.approx(jsd_tokens[0].mean().item(), abs=1e-6)
     assert metrics["self_distillation/jsd/incorrect_seq_mean"] == pytest.approx(jsd_tokens[1].mean().item(), abs=1e-6)
+    assert metrics["__wandb_hist/self_distillation/jsd_hist/correct_token"].shape == (2,)
+    assert metrics["__wandb_hist/self_distillation/jsd_hist/incorrect_token"].shape == (2,)
 
 
 def test_self_distillation_config_validates_sdpo_teacher_mix():
