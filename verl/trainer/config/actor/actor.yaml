@@ -119,7 +119,7 @@ self_distillation:
   jsd_histogram_log_freq: 0
 
   # Maximum token JSD values sampled per correct/incorrect histogram at a logging step.
-  jsd_histogram_max_samples: 4096
+  jsd_histogram_max_samples: 8192
 
   # Minimum sequence reward to be considered successful
   success_reward_threshold: 0.5

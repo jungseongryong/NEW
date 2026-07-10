@@ -19,7 +19,7 @@ actor_rollout_ref:
       max_reprompt_len: 10240
       is_clip: 2.0
       jsd_histogram_log_freq: 5
-      jsd_histogram_max_samples: 4096
+      jsd_histogram_max_samples: 8192
     optim:
       lr: 1e-5
   rollout:

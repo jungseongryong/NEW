@@ -101,7 +101,7 @@ class SelfDistillationConfig(BaseConfig):
     sdpo_correct_teacher_mix_mode: Optional[str] = None
     sdpo_incorrect_teacher_mix_mode: Optional[str] = None
     jsd_histogram_log_freq: int = 0
-    jsd_histogram_max_samples: int = 4096
+    jsd_histogram_max_samples: int = 8192
     reprompt_template: str = (
         "{prompt}{solution}{feedback}\n\n"
         "Correctly solve the original question.\n"

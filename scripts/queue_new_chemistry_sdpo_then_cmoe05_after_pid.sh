@@ -99,7 +99,7 @@ run_sdpo_variant() {
         actor_rollout_ref.actor.self_distillation.teacher_update_rate=0.1 \
         actor_rollout_ref.actor.self_distillation.is_clip=2.0 \
         actor_rollout_ref.actor.self_distillation.jsd_histogram_log_freq=5 \
-        actor_rollout_ref.actor.self_distillation.jsd_histogram_max_samples=4096 \
+        actor_rollout_ref.actor.self_distillation.jsd_histogram_max_samples=8192 \
         actor_rollout_ref.actor.self_distillation.include_environment_feedback=False \
         actor_rollout_ref.actor.self_distillation.max_reprompt_len=10240 \
         "$@"
