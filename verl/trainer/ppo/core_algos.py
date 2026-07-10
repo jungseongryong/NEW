@@ -1516,6 +1516,57 @@ def _compute_self_distillation_loss_mat(
             kl_loss = torch.lerp(kl_student, kl_teacher, alpha)  # Compute the Generalized Jensen-Shannon Divergence
 
         per_token_loss = kl_loss.sum(-1)
+
+        if self_distillation_correct_mask is not None:
+            metric_name = "jsd" if 0.0 < float(self_distillation_config.alpha) < 1.0 else "kl"
+            active_mask = loss_mask.to(dtype=per_token_loss.dtype)
+            correct_token_mask = active_mask * self_distillation_correct_mask.to(
+                dtype=per_token_loss.dtype, device=per_token_loss.device
+            ).unsqueeze(1)
+            incorrect_token_mask = active_mask * (1.0 - self_distillation_correct_mask.to(
+                dtype=per_token_loss.dtype, device=per_token_loss.device
+            ).unsqueeze(1))
+
+            def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> float:
+                denom = mask.sum()
+                if denom.detach().item() <= 0:
+                    return 0.0
+                return ((values * mask).sum() / denom.clamp(min=1.0)).detach().item()
+
+            def sequence_mean(values: torch.Tensor, token_mask: torch.Tensor, sample_mask: torch.Tensor) -> float:
+                sample_mask = sample_mask.to(dtype=values.dtype, device=values.device)
+                sample_count = sample_mask.sum()
+                if sample_count.detach().item() <= 0:
+                    return 0.0
+                seq_values = (values * token_mask).sum(dim=1) / token_mask.sum(dim=1).clamp(min=1.0)
+                return ((seq_values * sample_mask).sum() / sample_count.clamp(min=1.0)).detach().item()
+
+            correct_sample_mask = (
+                (self_distillation_correct_mask.to(dtype=per_token_loss.dtype, device=per_token_loss.device) > 0.5)
+                & (self_distillation_mask.to(device=per_token_loss.device).bool()
+                   if self_distillation_mask is not None
+                   else torch.ones_like(self_distillation_correct_mask, dtype=torch.bool, device=per_token_loss.device))
+            ).to(dtype=per_token_loss.dtype)
+            incorrect_sample_mask = (
+                (self_distillation_correct_mask.to(dtype=per_token_loss.dtype, device=per_token_loss.device) <= 0.5)
+                & (self_distillation_mask.to(device=per_token_loss.device).bool()
+                   if self_distillation_mask is not None
+                   else torch.ones_like(self_distillation_correct_mask, dtype=torch.bool, device=per_token_loss.device))
+            ).to(dtype=per_token_loss.dtype)
+
+            metrics.update(
+                {
+                    f"self_distillation/{metric_name}/token_mean": masked_mean(per_token_loss, active_mask),
+                    f"self_distillation/{metric_name}/correct_token_mean": masked_mean(per_token_loss, correct_token_mask),
+                    f"self_distillation/{metric_name}/incorrect_token_mean": masked_mean(per_token_loss, incorrect_token_mask),
+                    f"self_distillation/{metric_name}/correct_seq_mean": sequence_mean(
+                        per_token_loss, active_mask, correct_sample_mask
+                    ),
+                    f"self_distillation/{metric_name}/incorrect_seq_mean": sequence_mean(
+                        per_token_loss, active_mask, incorrect_sample_mask
+                    ),
+                }
+            )
     else:
         assert self_distillation_config.alpha == 1.0, "Only reverse KL is supported for non-full-logit distillation"
         log_ratio = student_log_probs - teacher_log_probs

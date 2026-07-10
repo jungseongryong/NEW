@@ -231,6 +231,62 @@ def test_sdpo_topk_poe_mixes_full_vocab_target_before_student_topk_gather():
     assert torch.allclose(loss, expected)
 
 
+def test_sdpo_logs_jsd_split_by_correctness():
+    student_all_probs = torch.tensor(
+        [
+            [[0.7, 0.3], [0.6, 0.4]],
+            [[0.4, 0.6], [0.2, 0.8]],
+        ]
+    )
+    teacher_all_probs = torch.tensor(
+        [
+            [[0.5, 0.5], [0.5, 0.5]],
+            [[0.8, 0.2], [0.7, 0.3]],
+        ]
+    )
+    student_all_log_probs = student_all_probs.log()
+    teacher_all_log_probs = teacher_all_probs.log()
+    sd_cfg = AttrDict(
+        full_logit_distillation=True,
+        distillation_topk=None,
+        alpha=0.5,
+        sdpo_teacher_mix_student_weight=0.0,
+        sdpo_teacher_mix_mode="moe",
+        is_clip=None,
+        srpo_dynamic_weighting=False,
+    )
+
+    _, metrics = compute_self_distillation_loss(
+        student_log_probs=student_all_log_probs[:, :, 0],
+        teacher_log_probs=teacher_all_log_probs[:, :, 0],
+        response_mask=torch.ones(2, 2),
+        self_distillation_config=sd_cfg,
+        student_all_log_probs=student_all_log_probs,
+        teacher_all_log_probs=teacher_all_log_probs,
+        self_distillation_mask=torch.tensor([1.0, 1.0]),
+        self_distillation_correct_mask=torch.tensor([1.0, 0.0]),
+    )
+
+    mixture_log_probs = (0.5 * student_all_probs + 0.5 * teacher_all_probs).log()
+    jsd_tokens = 0.5 * torch.nn.functional.kl_div(
+        mixture_log_probs,
+        student_all_log_probs,
+        reduction="none",
+        log_target=True,
+    ).sum(-1) + 0.5 * torch.nn.functional.kl_div(
+        mixture_log_probs,
+        teacher_all_log_probs,
+        reduction="none",
+        log_target=True,
+    ).sum(-1)
+
+    assert metrics["self_distillation/jsd/token_mean"] == pytest.approx(jsd_tokens.mean().item(), abs=1e-6)
+    assert metrics["self_distillation/jsd/correct_token_mean"] == pytest.approx(jsd_tokens[0].mean().item(), abs=1e-6)
+    assert metrics["self_distillation/jsd/incorrect_token_mean"] == pytest.approx(jsd_tokens[1].mean().item(), abs=1e-6)
+    assert metrics["self_distillation/jsd/correct_seq_mean"] == pytest.approx(jsd_tokens[0].mean().item(), abs=1e-6)
+    assert metrics["self_distillation/jsd/incorrect_seq_mean"] == pytest.approx(jsd_tokens[1].mean().item(), abs=1e-6)
+
+
 def test_self_distillation_config_validates_sdpo_teacher_mix():
     with pytest.raises(ValueError, match="sdpo_teacher_mix_student_weight"):
         SelfDistillationConfig(sdpo_teacher_mix_student_weight=1.1)
