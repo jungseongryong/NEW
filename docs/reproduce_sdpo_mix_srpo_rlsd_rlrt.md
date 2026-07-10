@@ -344,7 +344,7 @@ bash training/verl_training.sh \
   data.train_files=[/workspace/SIPO/datasets/sciknoweval/chemistry/train.parquet] \
   data.val_files=[/workspace/SIPO/datasets/sciknoweval/chemistry/test.parquet] \
   data.train_batch_size=32 \
-  data.train_max_samples=4800 \
+  data.train_max_samples=6400 \
   data.max_prompt_length=2048 \
   data.max_response_length=8192 \
   data.apply_chat_template_kwargs.enable_thinking=false \
@@ -468,7 +468,7 @@ bash training/verl_training.sh \
   data.train_files=[/workspace/SIPO/datasets/sciknoweval/chemistry/train.parquet] \
   data.val_files=[/workspace/SIPO/datasets/sciknoweval/chemistry/test.parquet] \
   data.train_batch_size=32 \
-  data.train_max_samples=4800 \
+  data.train_max_samples=6400 \
   data.max_prompt_length=2048 \
   data.max_response_length=8192 \
   data.apply_chat_template_kwargs.enable_thinking=false \
@@ -535,7 +535,7 @@ bash training/verl_training.sh \
   data.train_files=[/workspace/SIPO/datasets/sciknoweval/chemistry/train.parquet] \
   data.val_files=[/workspace/SIPO/datasets/sciknoweval/chemistry/test.parquet] \
   data.train_batch_size=32 \
-  data.train_max_samples=4800 \
+  data.train_max_samples=6400 \
   data.max_prompt_length=2048 \
   data.max_response_length=8192 \
   data.apply_chat_template_kwargs.enable_thinking=false \
@@ -554,7 +554,7 @@ bash training/verl_training.sh \
   +ray_kwargs.ray_init._temp_dir=/tmp/ray_new_q3g_chemistry_srpo_Qwen3_4B \
   +ray_kwargs.ray_init.include_dashboard=False \
   actor_rollout_ref.model.path=Qwen/Qwen3-4B \
-  actor_rollout_ref.actor.optim.lr=1e-5 \
+  actor_rollout_ref.actor.optim.lr=5e-6 \
   actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
   actor_rollout_ref.actor.optim.weight_decay=0.01 \
   actor_rollout_ref.actor.grad_clip=1.0 \
@@ -581,10 +581,12 @@ bash training/verl_training.sh \
   actor_rollout_ref.actor.self_distillation.teacher_update_rate=0.1 \
   actor_rollout_ref.actor.self_distillation.is_clip=2.0 \
   actor_rollout_ref.actor.self_distillation.include_environment_feedback=False \
-  actor_rollout_ref.actor.self_distillation.max_reprompt_len=10240
+  actor_rollout_ref.actor.self_distillation.max_reprompt_len=10240 \
+  actor_rollout_ref.actor.self_distillation.srpo_dynamic_weighting=true \
+  actor_rollout_ref.actor.self_distillation.srpo_dynamic_weighting_temperature=1.0
 ```
 
-SRPO dynamic weighting을 켜려면 추가:
+현재 예약된 SRPO run은 dynamic weighting을 켠다:
 
 ```bash
 actor_rollout_ref.actor.self_distillation.srpo_dynamic_weighting=true \

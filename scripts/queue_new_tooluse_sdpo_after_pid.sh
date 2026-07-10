@@ -48,7 +48,7 @@ run_tooluse_variant() {
         data.train_files=[/workspace/SIPO/datasets/tooluse/train.parquet] \
         data.val_files=[/workspace/SIPO/datasets/tooluse/test.parquet] \
         data.train_batch_size=32 \
-        data.train_max_samples=4800 \
+        data.train_max_samples=6400 \
         data.max_prompt_length=2048 \
         data.max_response_length=8192 \
         data.apply_chat_template_kwargs.enable_thinking=false \

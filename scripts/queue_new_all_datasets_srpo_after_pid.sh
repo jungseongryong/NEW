@@ -6,11 +6,11 @@ WAIT_PID="${1:-}"
 PROJECT_ROOT=/workspace/SDPO-new-clean
 VENV_ROOT=/workspace/SIPO/.venv
 RUN_SUFFIX="${RUN_SUFFIX:-}"
-QUEUE_LOG="$PROJECT_ROOT/logs/qwen3-4b-all-datasets-plain-sdpo-after-${WAIT_PID:-now}-$(date -u +%Y%m%d-%H%M%S).log"
+QUEUE_LOG="$PROJECT_ROOT/logs/qwen3-4b-all-datasets-srpo-after-${WAIT_PID:-now}-$(date -u +%Y%m%d-%H%M%S).log"
 
 mkdir -p "$PROJECT_ROOT/logs"
-echo "$$" > "$PROJECT_ROOT/logs/qwen3-4b-all-datasets-plain-sdpo-after.pid"
-echo "$QUEUE_LOG" > "$PROJECT_ROOT/logs/qwen3-4b-all-datasets-plain-sdpo-after.logpath"
+echo "$$" > "$PROJECT_ROOT/logs/qwen3-4b-all-datasets-srpo-after.pid"
+echo "$QUEUE_LOG" > "$PROJECT_ROOT/logs/qwen3-4b-all-datasets-srpo-after.logpath"
 
 log() {
     echo "[$(date -u +"%F %T UTC")] $*"
@@ -25,21 +25,21 @@ wait_for_pid() {
     if [[ -z "$pid" || "$pid" == "now" ]]; then
         return
     fi
-    log "Waiting for PID ${pid} before all-dataset plain SDPO."
+    log "Waiting for PID ${pid} before all-dataset SRPO."
     while kill -0 "$pid" 2>/dev/null; do
         sleep 60
     done
-    log "PID ${pid} finished; starting all-dataset plain SDPO."
+    log "PID ${pid} finished; starting all-dataset SRPO."
 }
 
-run_plain_sdpo() {
+run_srpo() {
     local dataset="$1"
     local task_path="$2"
     local train_file="$3"
     local val_file="$4"
     local metric_prefix="$5"
     local ray_suffix="$6"
-    local exp_name="qwen3gen-${dataset}-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-200clean${RUN_SUFFIX}"
+    local exp_name="qwen3gen-${dataset}-SRPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-dwtrue-train32-rollout8-lr5e-6-vllm0.8-newrepo-srpo-200clean${RUN_SUFFIX}"
 
     log "Stopping any existing Ray runtime before ${exp_name}."
     stop_ray
@@ -47,7 +47,7 @@ run_plain_sdpo() {
 
     bash training/verl_training.sh \
         "$exp_name" \
-        sdpo \
+        srpo \
         "$task_path" \
         max_model_len=10240 \
         data.train_files=["$train_file"] \
@@ -70,10 +70,10 @@ run_plain_sdpo() {
         trainer.max_critic_ckpt_to_keep=1 \
         trainer.default_local_dir="$PROJECT_ROOT/checkpoints/$task_path/$exp_name" \
         custom_reward_function.path="$PROJECT_ROOT/verl/utils/reward_score/feedback/__init__.py" \
-        +ray_kwargs.ray_init._temp_dir=/tmp/ray_new_q3g_${ray_suffix}_sdpo_Qwen3_4B \
+        +ray_kwargs.ray_init._temp_dir=/tmp/ray_new_q3g_${ray_suffix}_srpo_Qwen3_4B \
         +ray_kwargs.ray_init.include_dashboard=False \
         actor_rollout_ref.model.path=Qwen/Qwen3-4B \
-        actor_rollout_ref.actor.optim.lr=1e-5 \
+        actor_rollout_ref.actor.optim.lr=5e-6 \
         actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
         actor_rollout_ref.actor.optim.weight_decay=0.01 \
         actor_rollout_ref.actor.grad_clip=1.0 \
@@ -96,7 +96,6 @@ run_plain_sdpo() {
         algorithm.rollout_correction.rollout_is=token \
         algorithm.rollout_correction.rollout_is_threshold=2.0 \
         actor_rollout_ref.model.use_fused_kernels=False \
-        actor_rollout_ref.actor.policy_loss.loss_mode=sdpo \
         actor_rollout_ref.actor.self_distillation.distillation_topk=100 \
         actor_rollout_ref.actor.self_distillation.alpha=0.5 \
         actor_rollout_ref.actor.self_distillation.teacher_regularization=trust-region \
@@ -105,7 +104,9 @@ run_plain_sdpo() {
         actor_rollout_ref.actor.self_distillation.jsd_histogram_log_freq=5 \
         actor_rollout_ref.actor.self_distillation.jsd_histogram_max_samples=8192 \
         actor_rollout_ref.actor.self_distillation.include_environment_feedback=False \
-        actor_rollout_ref.actor.self_distillation.max_reprompt_len=10240
+        actor_rollout_ref.actor.self_distillation.max_reprompt_len=10240 \
+        actor_rollout_ref.actor.self_distillation.srpo_dynamic_weighting=true \
+        actor_rollout_ref.actor.self_distillation.srpo_dynamic_weighting_temperature=1.0
 
     log "Finished ${exp_name}."
 }
@@ -124,11 +125,13 @@ main() {
 
     wait_for_pid "$WAIT_PID"
 
-    run_plain_sdpo chemistry datasets/sciknoweval/chemistry /workspace/SIPO/datasets/sciknoweval/chemistry/train.parquet /workspace/SIPO/datasets/sciknoweval/chemistry/test.parquet sciknoweval chemistry
-    run_plain_sdpo physics datasets/sciknoweval/physics /workspace/SIPO/datasets/sciknoweval/physics/train.parquet /workspace/SIPO/datasets/sciknoweval/physics/test.parquet sciknoweval physics
-    run_plain_sdpo biology datasets/sciknoweval/biology /workspace/SIPO/datasets/sciknoweval/biology/train.parquet /workspace/SIPO/datasets/sciknoweval/biology/test.parquet sciknoweval biology
-    run_plain_sdpo material datasets/sciknoweval/material /workspace/SIPO/datasets/sciknoweval/material/train.parquet /workspace/SIPO/datasets/sciknoweval/material/test.parquet sciknoweval material
-    log "All-dataset plain SDPO finished."
+    run_srpo chemistry datasets/sciknoweval/chemistry /workspace/SIPO/datasets/sciknoweval/chemistry/train.parquet /workspace/SIPO/datasets/sciknoweval/chemistry/test.parquet sciknoweval chemistry
+    run_srpo physics datasets/sciknoweval/physics /workspace/SIPO/datasets/sciknoweval/physics/train.parquet /workspace/SIPO/datasets/sciknoweval/physics/test.parquet sciknoweval physics
+    run_srpo biology datasets/sciknoweval/biology /workspace/SIPO/datasets/sciknoweval/biology/train.parquet /workspace/SIPO/datasets/sciknoweval/biology/test.parquet sciknoweval biology
+    run_srpo material datasets/sciknoweval/material /workspace/SIPO/datasets/sciknoweval/material/train.parquet /workspace/SIPO/datasets/sciknoweval/material/test.parquet sciknoweval material
+    run_srpo tooluse datasets/tooluse /workspace/SIPO/datasets/tooluse/train.parquet /workspace/SIPO/datasets/tooluse/test.parquet tooluse tooluse
+
+    log "All-dataset SRPO finished."
 } >> "$QUEUE_LOG" 2>&1
 
 main
