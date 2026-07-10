@@ -118,31 +118,31 @@ run_sdpo_variant() {
     log "PID ${WAIT_PID} finished. Starting NEW repo SDPO runs."
 
     run_sdpo_variant \
-        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo
+        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-150clean
 
     run_sdpo_variant \
-        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-cmoe03 \
+        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-cmoe03-150clean \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_student_weight=0.3 \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_mode=moe \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_student_weight=0.0 \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_mode=moe
 
     run_sdpo_variant \
-        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-cpoe03 \
+        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-cpoe03-150clean \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_student_weight=0.3 \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_mode=poe \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_student_weight=0.0 \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_mode=poe
 
     run_sdpo_variant \
-        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-imoe03 \
+        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-imoe03-150clean \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_student_weight=0.0 \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_mode=moe \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_student_weight=0.3 \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_mode=moe
 
     run_sdpo_variant \
-        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-ipoe03 \
+        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-ipoe03-150clean \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_student_weight=0.0 \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_mode=poe \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_student_weight=0.3 \
