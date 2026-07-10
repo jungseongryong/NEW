@@ -1606,7 +1606,39 @@ class RayPPOTrainer:
             if values.size > 0
         }
         if histogram_metrics:
+            print(
+                "Logging W&B histograms: "
+                + ", ".join(f"{key}={histogram_values[key].size}" for key in histogram_metrics),
+                flush=True,
+            )
             logger.log(data=histogram_metrics, step=self.global_steps, backend=["wandb"])
+
+            histogram_path = os.path.join(self.config.trainer.default_local_dir, "jsd_histograms.jsonl")
+            os.makedirs(os.path.dirname(histogram_path), exist_ok=True)
+            with open(histogram_path, "a", encoding="utf-8") as f:
+                for key, values in histogram_values.items():
+                    if values.size <= 0:
+                        continue
+                    quantiles = np.quantile(values, [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0])
+                    json.dump(
+                        {
+                            "step": int(self.global_steps),
+                            "key": key,
+                            "count": int(values.size),
+                            "mean": float(np.mean(values)),
+                            "std": float(np.std(values)),
+                            "min": float(quantiles[0]),
+                            "p10": float(quantiles[1]),
+                            "p25": float(quantiles[2]),
+                            "p50": float(quantiles[3]),
+                            "p75": float(quantiles[4]),
+                            "p90": float(quantiles[5]),
+                            "max": float(quantiles[6]),
+                            "values": values.astype(float).tolist(),
+                        },
+                        f,
+                    )
+                    f.write("\n")
 
     def _update_critic(self, batch: DataProto) -> DataProto:
         if self.use_legacy_worker_impl == "disable":
@@ -1936,8 +1968,18 @@ class RayPPOTrainer:
                             actor_output = self._update_actor(batch)
                         actor_raw_metrics = actor_output.meta_info["metrics"]
                         wandb_histogram_values = self._pop_wandb_histogram_values(actor_raw_metrics)
+                        histogram_log_freq = int(
+                            self.config.actor_rollout_ref.actor.self_distillation.get(
+                                "jsd_histogram_log_freq", 0
+                            )
+                            or 0
+                        )
+                        if histogram_log_freq <= 0 or self.global_steps % histogram_log_freq != 0:
+                            wandb_histogram_values = {}
                         actor_output_metrics = reduce_metrics(actor_raw_metrics)
                         metrics.update(actor_output_metrics)
+                        for hist_key, hist_values in wandb_histogram_values.items():
+                            metrics[f"{hist_key}/count"] = int(hist_values.size)
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)

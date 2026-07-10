@@ -1586,8 +1586,6 @@ def _compute_self_distillation_loss_mat(
             if (
                 metric_name == "jsd"
                 and histogram_log_freq > 0
-                and global_step is not None
-                and int(global_step) % histogram_log_freq == 0
             ):
                 max_histogram_samples = int(
                     _config_get(self_distillation_config, "jsd_histogram_max_samples", 4096)

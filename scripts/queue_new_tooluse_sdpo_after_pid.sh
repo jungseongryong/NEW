@@ -1,59 +1,52 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 WAIT_PID="${1:-}"
-START_FROM="${2:-all}"
+
+PROJECT_ROOT=/workspace/SDPO-new-clean
+VENV_ROOT=/workspace/SIPO/.venv
 RUN_SUFFIX="${RUN_SUFFIX:-}"
+QUEUE_LOG="$PROJECT_ROOT/logs/qwen3-4b-tooluse-sdpo-variants-after-${WAIT_PID:-now}-$(date -u +%Y%m%d-%H%M%S).log"
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$PROJECT_ROOT"
-
-mkdir -p logs checkpoints
-QUEUE_LOG="logs/qwen3-4b-chemistry-new-sdpo-then-cmoe05-after-${WAIT_PID:-now}-${START_FROM}-$(date -u +%Y%m%d-%H%M%S).log"
-echo "$$" > logs/qwen3-4b-chemistry-new-sdpo-then-cmoe05-after.pid
-echo "$QUEUE_LOG" > logs/qwen3-4b-chemistry-new-sdpo-then-cmoe05-after.logpath
+mkdir -p "$PROJECT_ROOT/logs"
+echo "$$" > "$PROJECT_ROOT/logs/qwen3-4b-tooluse-sdpo-variants-after.pid"
+echo "$QUEUE_LOG" > "$PROJECT_ROOT/logs/qwen3-4b-tooluse-sdpo-variants-after.logpath"
 
 log() {
     echo "[$(date -u +"%F %T UTC")] $*"
 }
 
-trap 'log "Queue exiting with status $?."' EXIT
+stop_ray() {
+    "$VENV_ROOT/bin/python" -m ray.scripts.scripts stop --force || true
+}
 
 wait_for_pid() {
     local pid="$1"
+    if [[ -z "$pid" || "$pid" == "now" ]]; then
+        return
+    fi
+    log "Waiting for PID ${pid} before tooluse SDPO variants."
     while kill -0 "$pid" 2>/dev/null; do
-        local state
-        state="$(ps -o stat= -p "$pid" 2>/dev/null | awk '{print $1}')"
-        if [[ "$state" == Z* ]]; then
-            log "PID ${pid} is defunct; treating it as finished."
-            return 0
-        fi
-        log "Waiting for PID ${pid} to finish."
-        sleep 300
+        sleep 60
     done
+    log "PID ${pid} finished; starting tooluse SDPO variants."
 }
 
-stop_ray() {
-    /workspace/SIPO/.venv/bin/python -m ray.scripts.scripts stop --force 2>/dev/null || true
-    rm -f /tmp/ray/ray_current_cluster
-}
-
-run_sdpo_variant() {
+run_tooluse_variant() {
     local exp_name="$1"
     shift
 
-    log "Starting ${exp_name}."
     log "Stopping any existing Ray runtime before ${exp_name}."
     stop_ray
-    log "Ray cleanup done for ${exp_name}; invoking training script."
+    log "Starting ${exp_name}."
 
     bash training/verl_training.sh \
         "$exp_name" \
         sdpo \
-        datasets/sciknoweval/chemistry \
+        datasets/tooluse \
         max_model_len=10240 \
-        data.train_files=[/workspace/SIPO/datasets/sciknoweval/chemistry/train.parquet] \
-        data.val_files=[/workspace/SIPO/datasets/sciknoweval/chemistry/test.parquet] \
+        data.train_files=[/workspace/SIPO/datasets/tooluse/train.parquet] \
+        data.val_files=[/workspace/SIPO/datasets/tooluse/test.parquet] \
         data.train_batch_size=32 \
         data.train_max_samples=4800 \
         data.max_prompt_length=2048 \
@@ -61,18 +54,18 @@ run_sdpo_variant() {
         data.apply_chat_template_kwargs.enable_thinking=false \
         trainer.group_name=QWEN3-SDPO-TR-GRPO-matched-generalization-NEW \
         trainer.n_gpus_per_node=8 \
-        trainer.total_training_steps=150 \
+        trainer.total_training_steps=200 \
         trainer.val_before_train=False \
         trainer.save_freq=-1 \
         trainer.test_freq=5 \
         trainer.save_best_checkpoint=True \
-        trainer.best_checkpoint_metric=val-aux/sciknoweval/reward/mean@16 \
+        trainer.best_checkpoint_metric=val-aux/tooluse/reward/mean@16 \
         trainer.best_checkpoint_mode=max \
         trainer.max_actor_ckpt_to_keep=1 \
         trainer.max_critic_ckpt_to_keep=1 \
-        trainer.default_local_dir="$PROJECT_ROOT/checkpoints/datasets/sciknoweval/chemistry/$exp_name" \
+        trainer.default_local_dir="$PROJECT_ROOT/checkpoints/datasets/tooluse/$exp_name" \
         custom_reward_function.path="$PROJECT_ROOT/verl/utils/reward_score/feedback/__init__.py" \
-        +ray_kwargs.ray_init._temp_dir=/tmp/ray_new_q3g_chemistry_sdpo_tr_Qwen3_4B \
+        +ray_kwargs.ray_init._temp_dir=/tmp/ray_new_q3g_tooluse_sdpo_Qwen3_4B \
         +ray_kwargs.ray_init.include_dashboard=False \
         actor_rollout_ref.model.path=Qwen/Qwen3-4B \
         actor_rollout_ref.actor.optim.lr=1e-5 \
@@ -113,54 +106,52 @@ run_sdpo_variant() {
     log "Finished ${exp_name}."
 }
 
-{
-    source /workspace/SIPO/.venv/bin/activate
-    export PYTHON_BIN=/workspace/SIPO/.venv/bin/python
-    export PATH=/workspace/SIPO/.venv/bin:$PATH
-    export PYTHONPATH="$PROJECT_ROOT:${PYTHONPATH:-}"
-    export WANDB_ENTITY="${WANDB_ENTITY:-seongryongjung-chung-ang-university}"
+main() {
+    cd "$PROJECT_ROOT"
+    source "$VENV_ROOT/bin/activate"
+
     export USER="${USER:-root}"
+    export PYTHONPATH="$PROJECT_ROOT"
+    export WORKSPACE_DIR=/workspace/SIPO
+    export SKIP_INSTALL=true
+    export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
+    export NUM_GPUS="${NUM_GPUS:-8}"
+    export WANDB_ENTITY="${WANDB_ENTITY:-seongryongjung-chung-ang-university}"
 
-    log "Queue started from ${PROJECT_ROOT}."
-    if [[ -n "$WAIT_PID" && "$WAIT_PID" != "now" ]]; then
-        wait_for_pid "$WAIT_PID"
-        log "PID ${WAIT_PID} finished. Starting NEW repo SDPO runs."
-    else
-        log "Starting NEW repo SDPO runs immediately."
-    fi
+    wait_for_pid "$WAIT_PID"
 
-    if [[ "$START_FROM" == "all" ]]; then
-        run_sdpo_variant \
-            qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-150clean${RUN_SUFFIX}
-    fi
+    run_tooluse_variant \
+        qwen3gen-tooluse-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-200clean${RUN_SUFFIX}
 
-    run_sdpo_variant \
-        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-cmoe03-150clean${RUN_SUFFIX} \
+    run_tooluse_variant \
+        qwen3gen-tooluse-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-cmoe03-200clean${RUN_SUFFIX} \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_student_weight=0.3 \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_mode=moe \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_student_weight=0.0 \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_mode=moe
 
-    run_sdpo_variant \
-        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-cpoe03-150clean${RUN_SUFFIX} \
+    run_tooluse_variant \
+        qwen3gen-tooluse-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-cpoe03-200clean${RUN_SUFFIX} \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_student_weight=0.3 \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_mode=poe \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_student_weight=0.0 \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_mode=poe
 
-    run_sdpo_variant \
-        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-imoe03-150clean${RUN_SUFFIX} \
+    run_tooluse_variant \
+        qwen3gen-tooluse-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-imoe03-200clean${RUN_SUFFIX} \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_student_weight=0.0 \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_mode=moe \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_student_weight=0.3 \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_mode=moe
 
-    run_sdpo_variant \
-        qwen3gen-chemistry-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-ipoe03-150clean${RUN_SUFFIX} \
+    run_tooluse_variant \
+        qwen3gen-tooluse-SDPO_TR-Qwen-Qwen3-4B-mbs32-tr0.1-train32-rollout8-lr1e-5-vllm0.8-newrepo-sdpo-ipoe03-200clean${RUN_SUFFIX} \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_student_weight=0.0 \
         actor_rollout_ref.actor.self_distillation.sdpo_correct_teacher_mix_mode=poe \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_student_weight=0.3 \
         actor_rollout_ref.actor.self_distillation.sdpo_incorrect_teacher_mix_mode=poe
 
-    log "All NEW repo SDPO runs finished."
+    log "All tooluse SDPO variants finished."
 } >> "$QUEUE_LOG" 2>&1
+
+main
