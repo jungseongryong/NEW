@@ -1115,6 +1115,20 @@ def _config_get(config: Any, key: str, default: Any = None) -> Any:
     return getattr(config, key, default)
 
 
+def is_sdpo_teacher_target_mix_enabled(self_distillation_config: Any) -> bool:
+    if float(_config_get(self_distillation_config, "sdpo_teacher_mix_student_weight", 0.0)) > 0.0:
+        return True
+    return any(
+        _config_get(self_distillation_config, key, None) is not None
+        for key in (
+            "sdpo_correct_teacher_mix_student_weight",
+            "sdpo_incorrect_teacher_mix_student_weight",
+            "sdpo_correct_teacher_mix_mode",
+            "sdpo_incorrect_teacher_mix_mode",
+        )
+    )
+
+
 def _maybe_mix_sdpo_teacher_target(
     student_log_probs: torch.Tensor,
     teacher_log_probs: torch.Tensor,
@@ -1402,6 +1416,7 @@ def _compute_self_distillation_loss_mat(
     teacher_all_log_probs: Optional[torch.Tensor] = None,
     student_topk_log_probs: Optional[torch.Tensor] = None,
     teacher_topk_log_probs: Optional[torch.Tensor] = None,
+    student_topk_indices: Optional[torch.Tensor] = None,
     self_distillation_mask: Optional[torch.Tensor] = None,
     self_distillation_correct_mask: Optional[torch.Tensor] = None,
     rollout_is_weights: Optional[torch.Tensor] = None,
@@ -1432,23 +1447,35 @@ def _compute_self_distillation_loss_mat(
                 return logp - logZ
 
             student_distill_log_probs = student_topk_log_probs
-            teacher_distill_log_probs = teacher_topk_log_probs
-            if self_distillation_config.distillation_add_tail:
-                student_distill_log_probs = add_tail(student_distill_log_probs)
-                teacher_distill_log_probs = add_tail(teacher_distill_log_probs)
-                teacher_distill_log_probs, target_mix_metrics = _maybe_mix_sdpo_teacher_target(
-                    student_distill_log_probs,
-                    teacher_distill_log_probs,
+            target_mix_enabled = is_sdpo_teacher_target_mix_enabled(self_distillation_config)
+            if target_mix_enabled:
+                if student_all_log_probs is None or teacher_all_log_probs is None or student_topk_indices is None:
+                    raise ValueError(
+                        "top-k SDPO teacher target mixing requires student_all_log_probs, "
+                        "teacher_all_log_probs, and student_topk_indices."
+                    )
+                full_teacher_target_log_probs, target_mix_metrics = _maybe_mix_sdpo_teacher_target(
+                    student_all_log_probs,
+                    teacher_all_log_probs,
                     self_distillation_config,
                     self_distillation_correct_mask,
+                )
+                teacher_distill_log_probs = torch.gather(
+                    full_teacher_target_log_probs,
+                    dim=-1,
+                    index=student_topk_indices.to(device=full_teacher_target_log_probs.device),
                 )
             else:
                 teacher_distill_log_probs, target_mix_metrics = _maybe_mix_sdpo_teacher_target(
                     student_distill_log_probs,
-                    teacher_distill_log_probs,
+                    teacher_topk_log_probs,
                     self_distillation_config,
                     self_distillation_correct_mask,
                 )
+            if self_distillation_config.distillation_add_tail:
+                student_distill_log_probs = add_tail(student_distill_log_probs)
+                teacher_distill_log_probs = add_tail(teacher_distill_log_probs)
+            else:
                 student_distill_log_probs = renorm_topk_log_probs(student_distill_log_probs)
                 teacher_distill_log_probs = renorm_topk_log_probs(teacher_distill_log_probs)
         else:
@@ -1553,6 +1580,7 @@ def compute_self_distillation_loss(
     teacher_all_log_probs: Optional[torch.Tensor] = None,
     student_topk_log_probs: Optional[torch.Tensor] = None,
     teacher_topk_log_probs: Optional[torch.Tensor] = None,
+    student_topk_indices: Optional[torch.Tensor] = None,
     self_distillation_mask: Optional[torch.Tensor] = None,
     self_distillation_correct_mask: Optional[torch.Tensor] = None,
     loss_agg_mode: str = "token-mean",
@@ -1568,6 +1596,7 @@ def compute_self_distillation_loss(
         teacher_all_log_probs=teacher_all_log_probs,
         student_topk_log_probs=student_topk_log_probs,
         teacher_topk_log_probs=teacher_topk_log_probs,
+        student_topk_indices=student_topk_indices,
         self_distillation_mask=self_distillation_mask,
         self_distillation_correct_mask=self_distillation_correct_mask,
         rollout_is_weights=rollout_is_weights,
@@ -1645,6 +1674,7 @@ def compute_srpo_policy_loss(
     teacher_all_log_probs: Optional[torch.Tensor] = None,
     student_topk_log_probs: Optional[torch.Tensor] = None,
     teacher_topk_log_probs: Optional[torch.Tensor] = None,
+    student_topk_indices: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, dict[str, Any]]:
     """Sample-Routed Policy Optimization.
 
@@ -1676,7 +1706,9 @@ def compute_srpo_policy_loss(
         teacher_all_log_probs=teacher_all_log_probs,
         student_topk_log_probs=student_topk_log_probs,
         teacher_topk_log_probs=teacher_topk_log_probs,
+        student_topk_indices=student_topk_indices,
         self_distillation_mask=distill_sample_mask,
+        self_distillation_correct_mask=self_distillation_correct_mask,
         rollout_is_weights=rollout_is_weights,
     )
 

@@ -35,6 +35,7 @@ from verl.trainer.ppo.core_algos import (
     compute_self_distillation_reweighted_policy_loss,
     compute_srpo_policy_loss,
     get_policy_loss_fn,
+    is_sdpo_teacher_target_mix_enabled,
     is_self_distillation_loss_mode,
     kl_penalty,
 )
@@ -204,7 +205,7 @@ class DataParallelPPOActor(BasePPOActor):
         calculate_sum_pi_squared = self.config.get("calculate_sum_pi_squared", False)
         sum_pi_squared_checkpointing = self.config.get("sum_pi_squared_checkpointing", False)
         use_topk = distill_topk is not None or topk_indices is not None
-        compute_all_logps = return_all_logps and not use_topk
+        compute_all_logps = return_all_logps
         return_topk_indices = use_topk and topk_indices is None
         if (return_all_logps or use_topk) and self.use_fused_kernels:
             raise ValueError("Logit distillation requires disabling fused kernels.")
@@ -802,14 +803,17 @@ class DataParallelPPOActor(BasePPOActor):
                     if teacher_regularization == "trust-region" and self.use_fused_kernels:
                         raise ValueError("trust-region teacher requires disabling fused kernels to access logits.")
                     # all return: (bsz, response_length)
-                    return_all_logps = (
-                        (sdpo_loss_enabled or srpo_loss_enabled)
-                        and self_distillation_cfg.full_logit_distillation
-                        and not self_distillation_cfg.distillation_topk
+                    full_logit_distillation = self_distillation_cfg.full_logit_distillation
+                    topk_distillation = self_distillation_cfg.distillation_topk is not None
+                    topk_target_mix = topk_distillation and is_sdpo_teacher_target_mix_enabled(
+                        self_distillation_cfg
+                    )
+                    return_all_logps = (sdpo_loss_enabled or srpo_loss_enabled) and full_logit_distillation and (
+                        not topk_distillation or topk_target_mix
                     )
                     distill_topk = (
                         self_distillation_cfg.distillation_topk
-                        if (sdpo_loss_enabled or srpo_loss_enabled) and self_distillation_cfg.full_logit_distillation
+                        if (sdpo_loss_enabled or srpo_loss_enabled) and full_logit_distillation
                         else None
                     )
                     outputs = self._forward_micro_batch(
@@ -883,6 +887,7 @@ class DataParallelPPOActor(BasePPOActor):
                                 teacher_all_log_probs=teacher_all_logps,
                                 student_topk_log_probs=student_topk_logps,
                                 teacher_topk_log_probs=teacher_topk_logps,
+                                student_topk_indices=student_topk_indices,
                             )
                         elif sdpo_loss_enabled:
                             pg_loss, pg_metrics = compute_self_distillation_loss(
@@ -895,6 +900,7 @@ class DataParallelPPOActor(BasePPOActor):
                                 teacher_all_log_probs=teacher_all_logps,
                                 student_topk_log_probs=student_topk_logps,
                                 teacher_topk_log_probs=teacher_topk_logps,
+                                student_topk_indices=student_topk_indices,
                                 self_distillation_mask=self_distillation_mask,
                                 self_distillation_correct_mask=self_distillation_correct_mask,
                                 loss_agg_mode=loss_agg_mode,

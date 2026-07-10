@@ -139,6 +139,98 @@ def test_sdpo_can_mix_teacher_target_with_moe_and_poe():
         assert metrics[f"self_distillation/sdpo_teacher_mix_mode_{mode}"] == 1.0
 
 
+def test_sdpo_topk_mixes_full_vocab_target_before_student_topk_gather():
+    student_all_probs = torch.tensor([[[0.6, 0.2, 0.2]]])
+    teacher_all_probs = torch.tensor([[[0.1, 0.3, 0.6]]])
+    student_all_log_probs = student_all_probs.log()
+    teacher_all_log_probs = teacher_all_probs.log()
+    student_topk_indices = torch.tensor([[[0, 1]]])
+    student_topk_log_probs = torch.gather(student_all_log_probs, dim=-1, index=student_topk_indices)
+    teacher_topk_log_probs = torch.gather(teacher_all_log_probs, dim=-1, index=student_topk_indices)
+    sd_cfg = AttrDict(
+        full_logit_distillation=True,
+        distillation_topk=2,
+        distillation_add_tail=True,
+        alpha=0.0,
+        sdpo_teacher_mix_student_weight=0.5,
+        sdpo_teacher_mix_mode="moe",
+        is_clip=None,
+        srpo_dynamic_weighting=False,
+    )
+
+    loss, _ = compute_self_distillation_loss(
+        student_log_probs=student_all_log_probs[:, :, 0],
+        teacher_log_probs=teacher_all_log_probs[:, :, 0],
+        response_mask=torch.ones(1, 1),
+        self_distillation_config=sd_cfg,
+        student_all_log_probs=student_all_log_probs,
+        teacher_all_log_probs=teacher_all_log_probs,
+        student_topk_log_probs=student_topk_log_probs,
+        teacher_topk_log_probs=teacher_topk_log_probs,
+        student_topk_indices=student_topk_indices,
+    )
+
+    expected_target = torch.tensor([[[0.35, 0.25, 0.40]]]).log()
+    expected_student = torch.tensor([[[0.60, 0.20, 0.20]]]).log()
+    expected = torch.nn.functional.kl_div(
+        expected_student,
+        expected_target,
+        reduction="sum",
+        log_target=True,
+    )
+    assert torch.allclose(loss, expected)
+
+
+def test_sdpo_topk_poe_mixes_full_vocab_target_before_student_topk_gather():
+    student_all_probs = torch.tensor([[[0.6, 0.2, 0.2]]])
+    teacher_all_probs = torch.tensor([[[0.1, 0.3, 0.6]]])
+    student_all_log_probs = student_all_probs.log()
+    teacher_all_log_probs = teacher_all_probs.log()
+    student_topk_indices = torch.tensor([[[0, 1]]])
+    student_topk_log_probs = torch.gather(student_all_log_probs, dim=-1, index=student_topk_indices)
+    teacher_topk_log_probs = torch.gather(teacher_all_log_probs, dim=-1, index=student_topk_indices)
+    sd_cfg = AttrDict(
+        full_logit_distillation=True,
+        distillation_topk=2,
+        distillation_add_tail=True,
+        alpha=0.0,
+        sdpo_teacher_mix_student_weight=0.5,
+        sdpo_teacher_mix_mode="poe",
+        is_clip=None,
+        srpo_dynamic_weighting=False,
+    )
+
+    loss, _ = compute_self_distillation_loss(
+        student_log_probs=student_all_log_probs[:, :, 0],
+        teacher_log_probs=teacher_all_log_probs[:, :, 0],
+        response_mask=torch.ones(1, 1),
+        self_distillation_config=sd_cfg,
+        student_all_log_probs=student_all_log_probs,
+        teacher_all_log_probs=teacher_all_log_probs,
+        student_topk_log_probs=student_topk_log_probs,
+        teacher_topk_log_probs=teacher_topk_log_probs,
+        student_topk_indices=student_topk_indices,
+    )
+
+    full_poe_target = 0.5 * student_all_log_probs + 0.5 * teacher_all_log_probs
+    full_poe_target = full_poe_target - torch.logsumexp(full_poe_target, dim=-1, keepdim=True)
+    expected_target = torch.cat(
+        [
+            torch.gather(full_poe_target, dim=-1, index=student_topk_indices),
+            torch.logsumexp(full_poe_target[:, :, 2:], dim=-1, keepdim=True),
+        ],
+        dim=-1,
+    )
+    expected_student = student_all_log_probs
+    expected = torch.nn.functional.kl_div(
+        expected_student,
+        expected_target,
+        reduction="sum",
+        log_target=True,
+    )
+    assert torch.allclose(loss, expected)
+
+
 def test_self_distillation_config_validates_sdpo_teacher_mix():
     with pytest.raises(ValueError, match="sdpo_teacher_mix_student_weight"):
         SelfDistillationConfig(sdpo_teacher_mix_student_weight=1.1)
