@@ -18,6 +18,12 @@ log() {
 wait_for_pid() {
     local pid="$1"
     while kill -0 "$pid" 2>/dev/null; do
+        local state
+        state="$(ps -o stat= -p "$pid" 2>/dev/null | awk '{print $1}')"
+        if [[ "$state" == Z* ]]; then
+            log "PID ${pid} is defunct; treating it as finished."
+            return 0
+        fi
         log "Waiting for PID ${pid} to finish."
         sleep 300
     done
@@ -43,13 +49,13 @@ run_sdpo_variant() {
         data.train_files=[/workspace/L2T-sdpo-mix-pr/datasets/sciknoweval/chemistry/train.parquet] \
         data.val_files=[/workspace/L2T-sdpo-mix-pr/datasets/sciknoweval/chemistry/test.parquet] \
         data.train_batch_size=32 \
-        data.train_max_samples=3200 \
+        data.train_max_samples=4800 \
         data.max_prompt_length=2048 \
         data.max_response_length=8192 \
         data.apply_chat_template_kwargs.enable_thinking=false \
         trainer.group_name=QWEN3-SDPO-TR-GRPO-matched-generalization-NEW \
         trainer.n_gpus_per_node=8 \
-        trainer.total_training_steps=100 \
+        trainer.total_training_steps=150 \
         trainer.val_before_train=False \
         trainer.save_freq=-1 \
         trainer.test_freq=5 \
