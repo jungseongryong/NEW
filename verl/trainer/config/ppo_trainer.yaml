@@ -158,6 +158,15 @@ trainer:
   # Save frequency (by iteration) for model checkpoints
   save_freq: -1
 
+  # Save a checkpoint only when the configured validation metric improves
+  save_best_checkpoint: False
+
+  # Validation metric used when save_best_checkpoint is enabled
+  best_checkpoint_metric: null
+
+  # Direction for best_checkpoint_metric: "max" or "min"
+  best_checkpoint_mode: max
+
   # ESI refers to the elastic server instance used during training, similar to the training plan. For example,
   # if you purchase 10 hours of computing power, the ESI will automatically shut down after 10 hours of training.
   # To ensure a checkpoint is saved before ESI shuts down, the system will start saving a checkpoint in advance.

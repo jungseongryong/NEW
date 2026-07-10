@@ -1252,6 +1252,44 @@ class RayPPOTrainer:
         with open(local_latest_checkpointed_iteration, "w") as f:
             f.write(str(self.global_steps))
 
+    def _maybe_save_best_checkpoint(self, val_metrics: dict[str, Any], timing_raw: dict[str, float]) -> None:
+        if not self.config.trainer.get("save_best_checkpoint", False):
+            return
+
+        metric_name = self.config.trainer.get("best_checkpoint_metric", None)
+        if not metric_name:
+            raise ValueError("trainer.save_best_checkpoint=True requires trainer.best_checkpoint_metric.")
+        if metric_name not in val_metrics:
+            available_metrics = ", ".join(sorted(val_metrics.keys()))
+            raise ValueError(
+                f"Best checkpoint metric '{metric_name}' not found in validation metrics. "
+                f"Available validation metrics: {available_metrics}"
+            )
+
+        metric_value = float(val_metrics[metric_name])
+        mode = self.config.trainer.get("best_checkpoint_mode", "max")
+        if mode not in {"max", "min"}:
+            raise ValueError(f"trainer.best_checkpoint_mode must be 'max' or 'min', got {mode}")
+
+        best_value = getattr(self, "_best_checkpoint_metric_value", None)
+        improved = (
+            best_value is None
+            or (mode == "max" and metric_value > best_value)
+            or (mode == "min" and metric_value < best_value)
+        )
+        if not improved:
+            print(
+                f"Best checkpoint unchanged at step {self.global_steps}: "
+                f"{metric_name}={metric_value}, best={best_value}"
+            )
+            return
+
+        self._best_checkpoint_metric_value = metric_value
+        self._best_checkpoint_step = self.global_steps
+        print(f"Saving new best checkpoint at step {self.global_steps}: {metric_name}={metric_value}")
+        with marked_timer("save_best_checkpoint", timing_raw, color="green"):
+            self._save_checkpoint()
+
     def _load_checkpoint(self):
         if self.config.trainer.resume_mode == "disable":
             return 0
@@ -1869,6 +1907,7 @@ class RayPPOTrainer:
                         if is_last_step:
                             last_val_metrics = val_metrics
                     metrics.update(val_metrics)
+                    self._maybe_save_best_checkpoint(val_metrics, timing_raw)
 
                 # Check if the ESI (Elastic Server Instance)/training plan is close to expiration.
                 esi_close_to_expiration = should_save_ckpt_esi(
