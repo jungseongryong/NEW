@@ -286,6 +286,16 @@ def test_sdpo_logs_jsd_split_by_correctness():
     assert metrics["self_distillation/jsd/token_mean"] == pytest.approx(jsd_tokens.mean().item(), abs=1e-6)
     assert metrics["self_distillation/jsd/correct_token_mean"] == pytest.approx(jsd_tokens[0].mean().item(), abs=1e-6)
     assert metrics["self_distillation/jsd/incorrect_token_mean"] == pytest.approx(jsd_tokens[1].mean().item(), abs=1e-6)
+    assert metrics["self_distillation/jsd/correct_token_group_mean"] == pytest.approx(
+        jsd_tokens[0].mean().item(), abs=1e-6
+    )
+    assert metrics["self_distillation/jsd/incorrect_token_group_mean"] == pytest.approx(
+        jsd_tokens[1].mean().item(), abs=1e-6
+    )
+    assert metrics["self_distillation/jsd/correct_token_count"] == pytest.approx(2.0, abs=1e-6)
+    assert metrics["self_distillation/jsd/incorrect_token_count"] == pytest.approx(2.0, abs=1e-6)
+    assert metrics["self_distillation/jsd/correct_token_fraction"] == pytest.approx(0.5, abs=1e-6)
+    assert metrics["self_distillation/jsd/incorrect_token_fraction"] == pytest.approx(0.5, abs=1e-6)
     assert metrics["self_distillation/jsd/correct_seq_mean"] == pytest.approx(jsd_tokens[0].mean().item(), abs=1e-6)
     assert metrics["self_distillation/jsd/incorrect_seq_mean"] == pytest.approx(jsd_tokens[1].mean().item(), abs=1e-6)
     assert metrics["__wandb_hist/self_distillation/jsd_hist/correct_token"].shape == (2,)

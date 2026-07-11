@@ -1568,12 +1568,29 @@ def _compute_self_distillation_loss_mat(
                    if self_distillation_mask is not None
                    else torch.ones_like(self_distillation_correct_mask, dtype=torch.bool, device=per_token_loss.device))
             ).to(dtype=per_token_loss.dtype)
+            correct_token_count = correct_token_mask.sum()
+            incorrect_token_count = incorrect_token_mask.sum()
+            active_token_count = active_mask.sum().clamp(min=1.0)
 
             metrics.update(
                 {
                     f"self_distillation/{metric_name}/token_mean": masked_mean(per_token_loss, active_mask),
                     f"self_distillation/{metric_name}/correct_token_mean": masked_mean(per_token_loss, correct_token_mask),
                     f"self_distillation/{metric_name}/incorrect_token_mean": masked_mean(per_token_loss, incorrect_token_mask),
+                    f"self_distillation/{metric_name}/correct_token_group_mean": masked_mean(
+                        per_token_loss, correct_token_mask
+                    ),
+                    f"self_distillation/{metric_name}/incorrect_token_group_mean": masked_mean(
+                        per_token_loss, incorrect_token_mask
+                    ),
+                    f"self_distillation/{metric_name}/correct_token_count": correct_token_count.detach().item(),
+                    f"self_distillation/{metric_name}/incorrect_token_count": incorrect_token_count.detach().item(),
+                    f"self_distillation/{metric_name}/correct_token_fraction": (
+                        correct_token_count / active_token_count
+                    ).detach().item(),
+                    f"self_distillation/{metric_name}/incorrect_token_fraction": (
+                        incorrect_token_count / active_token_count
+                    ).detach().item(),
                     f"self_distillation/{metric_name}/correct_seq_mean": sequence_mean(
                         per_token_loss, active_mask, correct_sample_mask
                     ),
